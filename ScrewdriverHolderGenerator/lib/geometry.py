@@ -16,12 +16,19 @@ def _point(x_mm: float, y_mm: float, z_mm: float = 0.0) -> adsk.core.Point3D:
     return adsk.core.Point3D.create(_mm_to_cm(x_mm), _mm_to_cm(y_mm), _mm_to_cm(z_mm))
 
 
-def _build_base(comp: adsk.fusion.Component, layout: Layout, base_thickness_mm: float) -> adsk.fusion.ExtrudeFeature:
+def _build_base(comp: adsk.fusion.Component, layout: Layout, params: Dict[str, float]) -> adsk.fusion.ExtrudeFeature:
+    base_thickness_mm = params["base_thickness"]
+    edge_margin_y = params["edge_margin_y"]
+
+    # Base covers all rows but not the back margin
+    # This prevents the base from sticking out behind the top tier
+    base_depth = edge_margin_y + sum(layout.row_depths[i] for i in range(layout.max_row + 1))
+
     sketches = comp.sketches
     sketch = sketches.add(comp.xYConstructionPlane)
-    rect = sketch.sketchCurves.sketchLines.addTwoPointRectangle(
+    sketch.sketchCurves.sketchLines.addTwoPointRectangle(
         _point(0, 0),
-        _point(layout.part_width_mm, layout.part_depth_mm),
+        _point(layout.part_width_mm, base_depth),
     )
     profile = sketch.profiles.item(0)
     extrudes = comp.features.extrudeFeatures
@@ -202,55 +209,129 @@ def _create_mount_holes(
     mount_style: str,
     csk_angle_deg: float,
 ) -> None:
-    hole_d = params["mount_hole_d"]
-    offset_x = params["mount_hole_edge_offset_x"]
-    offset_y = params["mount_hole_edge_offset_y"]
+    """Create mounting plate at back of holder with 4 screw holes.
 
-    points = [
-        (offset_x, offset_y),
-        (layout.part_width_mm - offset_x, offset_y),
-        (offset_x, layout.part_depth_mm - offset_y),
-        (layout.part_width_mm - offset_x, layout.part_depth_mm - offset_y),
+    The mounting plate:
+    - Spans full width plus wing extensions on both sides
+    - Located at the back (+Y end) of the holder
+    - Extends upward (+Z) above the top tier
+    - Has 4 holes: 2 at bottom corners of extensions, 2 at top corners
+    """
+    hole_d = params["mount_hole_d"]
+    wing_extension = params["mount_hole_edge_offset_x"]  # How far plate extends beyond holder in ±X
+    wing_thickness = params["mount_hole_edge_offset_y"]  # Plate thickness in Y
+    base_thickness = params["base_thickness"]
+    row_z_step = params["row_z_step"]
+    edge_margin_y = params["edge_margin_y"]
+
+    # Calculate base_depth (where the holder body ends in Y)
+    base_depth = edge_margin_y + sum(layout.row_depths[i] for i in range(layout.max_row + 1))
+
+    # Calculate wing dimensions
+    top_tier_z = base_thickness + layout.max_row * row_z_step
+    wing_z_height = top_tier_z + base_thickness  # Total height to accommodate holder + upper holes
+
+    # Create one continuous mounting plate at back of holder
+    # Sketch on XZ plane offset to Y = base_depth (back of holder body)
+    planes = comp.constructionPlanes
+    plane_input = planes.createInput()
+    plane_input.setByOffset(
+        comp.xZConstructionPlane,
+        adsk.core.ValueInput.createByReal(_mm_to_cm(base_depth))
+    )
+    back_plane = planes.add(plane_input)
+
+    sketch_wing = comp.sketches.add(back_plane)
+    lines = sketch_wing.sketchCurves.sketchLines
+
+    # One rectangle spanning full width plus extensions
+    # Shifted by wing_z_height in +Z direction (negative in sketch Y means positive world Z)
+    lines.addTwoPointRectangle(
+        adsk.core.Point3D.create(_mm_to_cm(-wing_extension), _mm_to_cm(-wing_z_height), 0),
+        adsk.core.Point3D.create(_mm_to_cm(layout.part_width_mm + wing_extension), 0, 0)
+    )
+
+    # Extrude plate in +Y direction (toward wall)
+    extrudes = comp.features.extrudeFeatures
+    profile = sketch_wing.profiles.item(0)
+    distance = adsk.core.ValueInput.createByReal(_mm_to_cm(wing_thickness))
+    extrudes.addSimple(profile, distance, adsk.fusion.FeatureOperations.JoinFeatureOperation)
+
+    # 4 hole positions: bottom-left, bottom-right, top-left, top-right
+    # Holes are in the extension areas (beyond the holder body)
+    # In sketch coords: Y is negative (maps to +Z in world)
+    hole_x_left = -wing_extension / 2
+    hole_x_right = layout.part_width_mm + wing_extension / 2
+    hole_z_bottom = -(base_thickness / 2)  # Near sketch Y=0 (top of wing in world Z)
+    hole_z_top = -(wing_z_height - base_thickness / 2)  # Near sketch Y=-wing_z_height (bottom in world Z)
+
+    hole_positions = [
+        (hole_x_left, hole_z_bottom),   # Bottom left
+        (hole_x_right, hole_z_bottom),  # Bottom right
+        (hole_x_left, hole_z_top),      # Top left
+        (hole_x_right, hole_z_top),     # Top right
     ]
 
-    sketch = comp.sketches.add(comp.xYConstructionPlane)
-    circles = sketch.sketchCurves.sketchCircles
-    for x_mm, y_mm in points:
-        circles.addByCenterRadius(_point(x_mm, y_mm), _mm_to_cm(hole_d / 2))
+    # Create holes through plate in Y direction
+    # Sketch on the back face of plate (Y = base_depth + wing_thickness)
+    plane_input2 = planes.createInput()
+    plane_input2.setByOffset(
+        comp.xZConstructionPlane,
+        adsk.core.ValueInput.createByReal(_mm_to_cm(base_depth + wing_thickness))
+    )
+    wing_back_plane = planes.add(plane_input2)
 
-    for profile in sketch.profiles:
-        _cut_through_all(comp, profile)
+    sketch_holes = comp.sketches.add(wing_back_plane)
+    for x_mm, z_mm in hole_positions:
+        sketch_holes.sketchCurves.sketchCircles.addByCenterRadius(
+            adsk.core.Point3D.create(_mm_to_cm(x_mm), _mm_to_cm(z_mm), 0),
+            _mm_to_cm(hole_d / 2)
+        )
+
+    # Cut through all in -Y direction (through plate)
+    for profile in sketch_holes.profiles:
+        extrude_input = extrudes.createInput(profile, adsk.fusion.FeatureOperations.CutFeatureOperation)
+        extent = adsk.fusion.ThroughAllExtentDefinition.create()
+        extrude_input.setOneSideExtent(extent, adsk.fusion.ExtentDirections.NegativeExtentDirection)
+        extrudes.add(extrude_input)
 
     mount_style = mount_style.lower()
     if mount_style == "none":
         return
 
+    # Counterbore on back face of plate (where screw head sits against wall)
     if mount_style == "counterbore":
         cbore_d = params["cbore_d"]
         cbore_depth = params["cbore_depth"]
-        sketch_cbore = comp.sketches.add(comp.xYConstructionPlane)
-        for x_mm, y_mm in points:
+        sketch_cbore = comp.sketches.add(wing_back_plane)
+        for x_mm, z_mm in hole_positions:
             sketch_cbore.sketchCurves.sketchCircles.addByCenterRadius(
-                _point(x_mm, y_mm), _mm_to_cm(cbore_d / 2)
+                adsk.core.Point3D.create(_mm_to_cm(x_mm), _mm_to_cm(z_mm), 0),
+                _mm_to_cm(cbore_d / 2)
             )
-        for profile in sketch_cbore.profiles:
-            extrudes = comp.features.extrudeFeatures
-            distance = adsk.core.ValueInput.createByReal(_mm_to_cm(cbore_depth))
-            extrude = extrudes.addSimple(profile, distance, adsk.fusion.FeatureOperations.CutFeatureOperation)
-            _ = extrude
-        return
+        for prof in sketch_cbore.profiles:
+            dist = adsk.core.ValueInput.createByReal(_mm_to_cm(cbore_depth))
+            extrude_input = extrudes.createInput(prof, adsk.fusion.FeatureOperations.CutFeatureOperation)
+            extrude_input.setOneSideExtent(
+                adsk.fusion.DistanceExtentDefinition.create(dist),
+                adsk.fusion.ExtentDirections.NegativeExtentDirection
+            )
+            extrudes.add(extrude_input)
 
     if mount_style == "countersink":
+        csk_d = params["csk_d"]
         chamfer_features = comp.features.chamferFeatures
         body = comp.bRepBodies.item(0)
         tol = 1e-4
-        distance = _mm_to_cm((params["csk_d"] - hole_d) / 2)
+        back_y = _mm_to_cm(base_depth + wing_thickness)
+        distance_val = _mm_to_cm((csk_d - hole_d) / 2)
         angle = math.radians(csk_angle_deg / 2)
+        # Find hole edges on back face of plate
         for edge in body.edges:
             geom = edge.geometry
             if not isinstance(geom, adsk.core.Circle3D):
                 continue
-            if abs(geom.center.z) > tol:
+            if abs(geom.center.y - back_y) > tol:
                 continue
             if abs(geom.radius - _mm_to_cm(hole_d / 2)) > tol:
                 continue
@@ -258,7 +339,7 @@ def _create_mount_holes(
             edge_collection.add(edge)
             chamfer_input = chamfer_features.createInput(edge_collection, True)
             chamfer_input.setToDistanceAndAngle(
-                adsk.core.ValueInput.createByReal(distance),
+                adsk.core.ValueInput.createByReal(distance_val),
                 adsk.core.ValueInput.createByReal(angle),
             )
             chamfer_features.add(chamfer_input)
@@ -291,7 +372,7 @@ def build_holder(
         comp = occurrence.component
         comp.name = "ScrewdriverHolder_GEN"
 
-    _build_base(comp, layout, params["base_thickness"])
+    _build_base(comp, layout, params)
     _build_steps(comp, layout, params)
     _create_tool_holes(comp, tools, layout, params)
     warnings = _chamfer_holes(comp, tools, layout, params)
