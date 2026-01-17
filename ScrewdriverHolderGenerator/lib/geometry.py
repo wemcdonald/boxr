@@ -51,7 +51,7 @@ def _build_steps(
         plane = planes.add(plane_input)
 
         row_start = params["edge_margin_y"] + sum(layout.row_depths[i] for i in range(row))
-        row_end = row_start + layout.row_depths[row]
+        row_end = layout.part_depth_mm - params["edge_margin_y"]  # Extend to back edge
 
         sketch = sketches.add(plane)
         sketch.sketchCurves.sketchLines.addTwoPointRectangle(
@@ -66,7 +66,7 @@ def _build_steps(
 def _cut_through_all(comp: adsk.fusion.Component, profile: adsk.fusion.Profile) -> None:
     extrudes = comp.features.extrudeFeatures
     extrude_input = extrudes.createInput(profile, adsk.fusion.FeatureOperations.CutFeatureOperation)
-    extent = adsk.fusion.ThroughAllExtentDefinition.create(adsk.fusion.ExtentDirections.PositiveExtentDirection)
+    extent = adsk.fusion.ThroughAllExtentDefinition.create()
     extrude_input.setOneSideExtent(extent, adsk.fusion.ExtentDirections.PositiveExtentDirection)
     extrudes.add(extrude_input)
 
@@ -138,7 +138,7 @@ def _chamfer_holes(
         chamfer_input = chamfer_features.createInput(edge_collection, True)
         depth = _mm_to_cm(params["hole_chamfer_depth"])
         width = _mm_to_cm(params["hole_chamfer_d"] / 2)
-        chamfer_input.setToDistanceDistance(adsk.core.ValueInput.createByReal(depth), adsk.core.ValueInput.createByReal(width))
+        chamfer_input.setToTwoDistances(adsk.core.ValueInput.createByReal(depth), adsk.core.ValueInput.createByReal(width))
         chamfer_features.add(chamfer_input)
 
     return warnings
@@ -273,13 +273,23 @@ def build_holder(
     angles: Dict[str, float],
 ) -> List[str]:
     root = design.rootComponent
-    for occ in list(root.occurrences):
-        if occ.component.name == "ScrewdriverHolder_GEN":
-            occ.deleteMe()
 
-    occurrence = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
-    comp = occurrence.component
-    comp.name = "ScrewdriverHolder_GEN"
+    # Check if this is a single-component Part document
+    # Parts cannot have sub-components; need to work on root directly
+    is_single_component_doc = len(root.occurrences) == 0 and len(root.bRepBodies) == 0
+
+    if is_single_component_doc:
+        # Work directly on the root component for Part documents
+        # Note: root component name cannot be changed in Fusion 360
+        comp = root
+    else:
+        # Assembly document: use sub-component pattern for clean regeneration
+        for occ in list(root.occurrences):
+            if occ.component.name == "ScrewdriverHolder_GEN":
+                occ.deleteMe()
+        occurrence = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+        comp = occurrence.component
+        comp.name = "ScrewdriverHolder_GEN"
 
     _build_base(comp, layout, params["base_thickness"])
     _build_steps(comp, layout, params)
