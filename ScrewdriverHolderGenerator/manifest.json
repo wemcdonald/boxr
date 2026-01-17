@@ -1,0 +1,10 @@
+{
+  "autodeskProduct": "Fusion360",
+  "type": "addin",
+  "id": "com.boxr.screwdriverholdergenerator",
+  "author": "boxr",
+  "description": "Generate a CSV-driven wall-mounted screwdriver holder.",
+  "supportedOS": ["windows", "mac"],
+  "version": "1.0.0",
+  "runOnStartup": false
+}
