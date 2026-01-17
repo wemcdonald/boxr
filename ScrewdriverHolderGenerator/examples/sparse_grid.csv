@@ -1,0 +1,9 @@
+name,row,col,handle_d_mm,shaft_d_mm,enabled
+Tool-A,0,0,20.0,6.0,1
+Tool-B,0,2,20.0,6.0,1
+Tool-C,0,5,20.0,6.0,1
+Tool-D,2,1,22.0,6.5,1
+Tool-E,2,4,22.0,6.5,1
+Tool-F,4,0,24.0,7.0,1
+Tool-G,4,3,24.0,7.0,1
+Tool-H,4,5,24.0,7.0,1
