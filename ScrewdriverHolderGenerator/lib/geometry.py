@@ -189,11 +189,21 @@ def _add_text_labels(
                 y_text = row_end - params["min_web"]
                 warnings.append(f"Text for {tool.name} clamped to row boundary.")
 
+            # Create text at target position (left-aligned by default)
             text_input = sketch_texts.createInput(tool.name, height, _point(x_center, y_text))
             text_input.fontName = font_name
-            text_input.horizontalAlignment = adsk.core.HorizontalAlignments.CenterHorizontalAlignment
-            text_input.verticalAlignment = adsk.core.VerticalAlignments.MiddleVerticalAlignment
-            sketch_texts.add(text_input)
+            sketch_text = sketch_texts.add(text_input)
+
+            # Get bounding box to find actual text width, then shift left by half
+            bbox = sketch_text.boundingBox
+            text_width = bbox.maxPoint.x - bbox.minPoint.x
+
+            # Move text left by half its width to center it
+            entities = adsk.core.ObjectCollection.create()
+            entities.add(sketch_text)
+            transform = adsk.core.Matrix3D.create()
+            transform.translation = adsk.core.Vector3D.create(-text_width / 2, 0, 0)
+            sketch.move(entities, transform)
 
         for profile in sketch.profiles:
             distance = adsk.core.ValueInput.createByReal(_mm_to_cm(params["emboss_height"]))
